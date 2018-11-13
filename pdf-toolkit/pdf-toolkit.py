@@ -4,6 +4,9 @@ from pathlib import Path as P
 import re
 from pikepdf import Pdf
 import pikepdf
+import tempfile
+import shutil
+import os
 
 def tab_change(*args):
     tab=n.index('current')
@@ -32,7 +35,7 @@ def go_cmd(*args):
         fp,tp=int(from_page.get())-1,int(to_page.get())-1
         if tp<fp:
             tp=fp
-            to_page.set(str(fp))
+            to_page.set(str(fp+1))
         d=int(direction.get())
         rotate(infile,fp,tp,d,outfile)
     elif tab==1: #Merge
@@ -40,7 +43,7 @@ def go_cmd(*args):
     elif tab==2: #Reorder
         pl=pagelist.get()
         match=re.findall(r'\d+\-\d+|\d+',pl)
-        if len(match):
+        if pl.strip()!='' and len(match):
             pl=[]
             for pr in match:
                 if pr.find('-')>0:
@@ -48,26 +51,31 @@ def go_cmd(*args):
                 else:
                     t=int(pr)
                 pl.append(t)
+        elif splitval.get():
+            pl=[(from_entry.config()['from'][4],to_entry.config()['to'][4])]
         else:
             messagebox.showerror(title='Input Error!',message='No valid page range found!')
         reorder(infile,pl,outfile)
     return
 def rotate(infile,fp,tp,d,outfile):
     global password
+    infile_stream=open(infile,'rb')
     try:
-        pdf_in=Pdf.open(infile)
+        pdf_in=Pdf.open(infile_stream)
     except pikepdf.PasswordError:
         if not password:
             password=get_password(P(infile).stem)
-        pdf_in=Pdf.open(infile,password)
+        pdf_in=Pdf.open(infile_stream,password)
     if outfile!=infile:
         pdf_out=Pdf.new()
         pdf_out.pages.extend(pdf_in.pages)
     else:
         pdf_out=pdf_in
     for page in pdf_out.pages[fp:tp+1]:
-        page.Rotate=d
+        page.Rotate=(page.Rotate+d)%360
     pdf_out.save(outfile)
+    infile_stream.close()
+    del pdf_out
 def merge(filelist,outfile):
     if outfile in filelist:
         messagebox.showerror(title='Filename Error',message='Input and output filenames must be different for this operation.')
@@ -81,39 +89,65 @@ def merge(filelist,outfile):
             pdf=Pdf.open(f,password)
         pdf_out.pages.extend(pdf.pages)
     pdf_out.save(outfile)
+    del pdf_out
 def reorder(infile,pl,outfile):
     global password
-    if outfile==infile:
-        messagebox.showerror(title='Filename Error',message='Input and output filenames must be different for this operation.')
-        return
+    infile_stream=open(infile,'rb')
     try:
-        pdf_in=Pdf.open(infile)
+        pdf_in=Pdf.open(infile_stream)
     except pikepdf.PasswordError:
         if not password:
             password=get_password(P(infile).stem)
-        pdf_in=Pdf.open(infile,password)
-    pdf_out=Pdf.new()
-    for i in pl:
-        if isinstance(i,int):
-            pdf_out.pages.extend([pdf_in.pages.p(i)])
-        elif isinstance(i,tuple):
-            pdf_out.pages.extend(pdf_in.pages[(i[0]-1):i[1]])
-    pdf_out.save(outfile)
+        pdf_in=Pdf.open(infile_stream,password)
+    if splitval.get():
+        max_pagenum=0
+        for i in pl:
+            if isinstance(i,int) and i>max_pagenum:
+                max_pagenum=i
+            elif isinstance(i,tuple) and max(i)>max_pagenum:
+                max_pagenum=max(i)
+        path=P(outfile)
+        outfiletemplate=str(P(path.parent,path.stem))+'_{:0'+str(len(str(52)))+'d}.pdf'
+        for i in pl:
+            if isinstance(i,int):
+                pdf_out=Pdf.new()
+                pdf_out.pages.extend([pdf_in.pages.p(i)])
+                pdf_out.save(outfiletemplate.format(i))
+            elif isinstance(i,tuple):
+                for j in range(i[0],i[1]+1):
+                    pdf_out=Pdf.new()
+                    pdf_out.pages.extend([pdf_in.pages.p(j)])
+                    pdf_out.save(outfiletemplate.format(j))
+            del pdf_out
+    else:
+        pdf_out=Pdf.new()
+        for i in pl:
+            if isinstance(i,int):
+                pdf_out.pages.extend([pdf_in.pages.p(i)])
+            elif isinstance(i,tuple):
+                pdf_out.pages.extend(pdf_in.pages[(i[0]-1):i[1]])
+        pdf_out.save(outfile)
+        del pdf_out
+    infile_stream.close()
 def get_input():
     global password
     infile=filedialog.askopenfilename(title='Select input file...',filetypes=(('PDF Files','*.pdf'),('All files','*.*')))
     input_file.set(infile)
+    infile_stream=open(infile,'r+b')
     try:
-        pdf_in=Pdf.open(infile)
+        pdf_in=Pdf.open(infile_stream)
     except pikepdf.PasswordError:
         password=get_password(P(infile).stem)
-        pdf_in=Pdf.open(infile,password=password)
+        pdf_in=Pdf.open(infile_stream,password=password)
     from_entry.config(from_=1)
     from_entry.set('1')
     from_entry.config(to=len(pdf_in.pages))
     to_entry.config(to=len(pdf_in.pages))
+    infile_stream.close()
 def get_output():
     outfile=filedialog.asksaveasfilename(title='Select output file...',filetypes=(('PDF Files','*.pdf'),('All files','*.*')))
+    if outfile[-4:]!='.pdf':
+        outfile+='.pdf'
     output_file.set(outfile)
 def add_merge_file():
     infile=filedialog.askopenfilenames(title='Select input file...',filetypes=(('PDF Files','*.pdf'),('All files','*.*')))
@@ -170,7 +204,7 @@ output_file=tk.StringVar()
 #create input file widgets
 input_label=ttk.Label(mainframe,text='Input')
 input_label.grid(column=0,row=0,sticky=tk.E,padx=10,pady=10)
-input_entry=ttk.Entry(mainframe,textvariable=input_file)
+input_entry=ttk.Entry(mainframe,textvariable=input_file,state='disabled')
 input_entry.grid(column=1,row=0,sticky=(tk.W,tk.E),pady=10)
 password=''
 input_button=ttk.Button(mainframe,text='Browse...',command=get_input)
@@ -232,19 +266,23 @@ ttk.Button(mergepage,text='Move Down',command=move_mergefile_down,underline=7).g
 ttk.Button(mergepage,text='Delete',command=del_merge_file,underline=0).grid(column=3,row=3,sticky=(tk.E,tk.S,tk.W),padx=10)
 
 #configure reorder page
-reorderpage.grid(column=0,row=0,columnspan=2,rowspan=1,sticky=(tk.N,tk.E,tk.S,tk.W))
+reorderpage.grid(column=0,row=0,columnspan=2,rowspan=2,sticky=(tk.N,tk.E,tk.S,tk.W))
 reorderpage.columnconfigure(1,weight=1)
 reorderpage.rowconfigure(0,weight=1)
+reorderpage.rowconfigure(1,weight=1)
 #create reorder widgets
 ttk.Label(reorderpage,text='Page List').grid(column=0,row=0,sticky=tk.E,padx=10)
 pagelist=tk.StringVar()
 page_entry=ttk.Entry(reorderpage,textvariable=pagelist)
 page_entry.grid(column=1,row=0,sticky=(tk.E,tk.W))
+splitval=tk.IntVar()
+splitval.set(0)
+splitcheck=tk.Checkbutton(reorderpage,text='Split pages as separate files',underline=0,variable=splitval).grid(column=0,row=1,columnspan=2,sticky=(tk.E,tk.W))
 
 #create tab interface
 n.add(rotatepage,text='Rotate',underline=0)
 n.add(mergepage,text='Merge',underline=0)
-n.add(reorderpage,text='Reorder',underline=2)
+n.add(reorderpage,text='Reorder/Split',underline=2)
 n.grid(column=0,columnspan=3,row=1,sticky=(tk.W,tk.E,tk.N,tk.S),padx=10)
 
 #create output file widgets
